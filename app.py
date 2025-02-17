@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error, root_mean_squared_error
 from dotenv import load_dotenv, find_dotenv
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from pmdarima import auto_arima
 import csv
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils import shuffle
