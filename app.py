@@ -14,7 +14,11 @@ from dotenv import load_dotenv, find_dotenv
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from pmdarima import auto_arima
 import csv
-
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.utils import shuffle
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+import matplotlib.pyplot as plt
 
 from statsmodels.tsa.arima.model import ARIMA
 
@@ -34,7 +38,6 @@ if not API_KEY:
 # DuckDB connection
 conn = duckdb.connect('data/stocks.duckdb')
 
-# Ensure metadata table exists
 def ensure_metadata_table():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_metadata (
@@ -56,8 +59,6 @@ def ensure_us_listings_table():
         )
     """)
 
-
-# Function to fetch and cache stock data
 def fetch_stock_data(symbol, fetch_latest=False):
     table_name = symbol.replace('.', '_')
     ensure_metadata_table()
@@ -70,12 +71,9 @@ def fetch_stock_data(symbol, fetch_latest=False):
         df = conn.execute(f"SELECT * FROM '{table_name}'").fetchdf()
     except:
         df = pd.DataFrame()
-    # Get last_fetched date from metadata
+    # Get last fetched date from metadata
     res = conn.execute("SELECT last_fetched FROM stock_metadata WHERE symbol = ?", [symbol]).fetchone()
-    if res:
-        last_fetched = res[0]
-    else:
-        last_fetched = None
+    last_fetched = res[0] if res else None
     if not df.empty:
         message = st.empty()
         message.success(f"Loaded cached data for {symbol}.")
@@ -84,7 +82,6 @@ def fetch_stock_data(symbol, fetch_latest=False):
     else:
         df, last_fetched = fetch_from_api(symbol)
     return df, last_fetched
-
 
 def fetch_from_api(symbol):
     table_name = symbol.replace('.', '_')
@@ -159,7 +156,6 @@ def plot_closing_price(df, symbol):
     fig.update_layout(
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Closing Price (USD)',
         hovermode='x unified',
@@ -177,7 +173,6 @@ def plot_volume(df, symbol):
     fig.update_layout(
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Volume',
         hovermode='x unified',
@@ -197,7 +192,6 @@ def plot_candlestick(df, symbol):
         title=f'{symbol} Candlestick Chart',
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Price (USD)',
         hovermode='x unified',
@@ -218,7 +212,6 @@ def plot_moving_average(df, symbol, window):
         title=f'{symbol} {window}-Day Moving Average',
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Price (USD)',
         hovermode='x unified',
@@ -237,7 +230,6 @@ def plot_high_low_prices(df, symbol):
         title=f'{symbol} High and Low Prices',
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Price (USD)',
         hovermode='x unified',
@@ -257,7 +249,6 @@ def plot_daily_returns(df, symbol):
     fig.update_layout(
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Daily Return (%)',
         hovermode='x unified',
@@ -278,7 +269,6 @@ def plot_cumulative_returns(df, symbol):
     fig.update_layout(
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Cumulative Return (%)',
         hovermode='x unified',
@@ -313,23 +303,21 @@ def plot_bollinger_bands(df, symbol, window=20):
         title=f'{symbol} Bollinger Bands',
         template='plotly_white',
         title_x=0.5,
-        title_xanchor='center',
         xaxis_title='Date',
         yaxis_title='Price (USD)',
         hovermode='x unified',
     )
     st.plotly_chart(fig, use_container_width=True)
+
 def train_model(df):
     df_ml = df[['Date', 'Close']].copy()
     df_ml.sort_values('Date', inplace=True)
     df_ml.reset_index(drop=True, inplace=True)
 
-    # Prepare data for forecasting
     df_ml['Date'] = pd.to_datetime(df_ml['Date'])
     df_ml.set_index('Date', inplace=True)
     df_ml = df_ml.asfreq('B')  # 'B' stands for business day frequency
 
-    # Fill any missing values (if any)
     df_ml['Close'].fillna(method='ffill', inplace=True)
 
     # Split data into training and test sets
@@ -337,7 +325,7 @@ def train_model(df):
     train = df_ml[:split_date]
     test = df_ml[split_date:]
 
-    # Prepare features
+    # Prepare features for linear regression
     train['Time'] = np.arange(len(train))
     test['Time'] = np.arange(len(train), len(train) + len(test))
 
@@ -346,7 +334,7 @@ def train_model(df):
     X_test = test[['Time']]
     y_test = test['Close']
 
-    # Train the model
+    # Train the linear regression model
     model = LinearRegression()
     model.fit(X_train, y_train)
 
@@ -357,56 +345,23 @@ def train_model(df):
     rmse = root_mean_squared_error(y_test, y_pred_test)
     mae = mean_absolute_error(y_test, y_pred_test)
 
-    # Print model coefficients
-    print("\nModel Coefficients:")
-    print(f"Intercept: {model.intercept_}")
-    print(f"Coefficient: {model.coef_[0]}")
-
-    # Print error metrics
-    print("\nError Metrics on Test Set:")
-    print(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
-    print(f"Mean Absolute Error (MAE): {mae:.2f}")
-
-    # Print actual vs predicted values on test set
-    print("\nActual vs. Predicted Close Prices on Test Set:")
-    for actual, predicted in zip(y_test, y_pred_test):
-        print(f"Actual: ${actual:.2f}, Predicted: ${predicted:.2f}, Actual: ${actual - predicted:.2f}")
-
     # Predict the next 30 business days
     future_time_index = np.arange(len(train) + len(test), len(train) + len(test) + 30)
     future_dates = pd.date_range(start=df_ml.index[-1] + pd.Timedelta(days=1), periods=45, freq='B')[:30]
     X_future = pd.DataFrame({'Time': future_time_index})
     y_future_pred = model.predict(X_future)
 
-    # Print future predictions
-    print("\nFuture Predictions for the Next 30 Business Days:")
-    for date, prediction in zip(future_dates, y_future_pred):
-        print(f"Date: {date.strftime('%Y-%m-%d')}, Predicted Close: ${prediction:.2f}")
-
     future_predictions = pd.DataFrame({'Date': future_dates, 'Predicted_Close': y_future_pred})
     future_predictions.reset_index(drop=True, inplace=True)
 
     return model, y_pred_test, y_test, future_predictions, rmse, mae
 
-
 def train_lstm_model(df):
-    import pandas as pd
-    import numpy as np
-    from sklearn.preprocessing import MinMaxScaler
-    from sklearn.utils import shuffle
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense
-    from sklearn.metrics import mean_squared_error, mean_absolute_error
-    import matplotlib.pyplot as plt
-    import streamlit as st
-
-    # Preprocess Data
     df_lstm = df.copy()
     df_lstm['Date'] = pd.to_datetime(df_lstm['Date'], unit='ms')
     df_lstm.set_index('Date', inplace=True)
     df_lstm.sort_index(inplace=True)
 
-    # Use only the 'Close' price for prediction
     close_prices = df_lstm[['Close']]
 
     # Feature Scaling
@@ -424,18 +379,16 @@ def train_lstm_model(df):
             targets.append(target)
         return np.array(sequences), np.array(targets)
 
-    # Define window size (e.g., 10 days)
-    window_size = 50
+    window_size = 50  # Window size for LSTM
 
-    # Create sequences and targets
     X, y = create_sequences(scaled_close, window_size)
 
-    # Split into training and testing sets (e.g., 80% train, 20% test)
+    # Split into training and testing sets
     split = int(0.8 * len(X))
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
 
-    # Reshape input data to [samples, time steps, features]
+    # Reshape input data for LSTM
     X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
     X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
 
@@ -447,7 +400,6 @@ def train_lstm_model(df):
     model.add(LSTM(50, activation='relu', input_shape=(window_size, 1)))
     model.add(Dense(1))
 
-    # Compile the model
     model.compile(optimizer='adam', loss='mean_squared_error')
 
     # Train the model
@@ -472,7 +424,7 @@ def train_lstm_model(df):
     rmse = root_mean_squared_error(y_test_inv, y_pred_test_inv)
     mae = mean_absolute_error(y_test_inv, y_pred_test_inv)
 
-    # Prepare y_pred_test and y_test as pandas Series with dates for plotting
+    # Prepare predictions for plotting
     test_dates = df_lstm.index[split + window_size:]
     y_test_series = pd.Series(y_test_inv.flatten(), index=test_dates)
     y_pred_series = pd.Series(y_pred_test_inv.flatten(), index=test_dates)
@@ -490,7 +442,6 @@ def train_lstm_model(df):
         predictions = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
         return predictions
 
-    # Number of days to predict into the future
     future_days = 10
 
     # Get future predictions
@@ -508,8 +459,6 @@ def train_lstm_model(df):
 
     return model, y_pred_series, y_test_series, future_predictions_df, rmse, mae
 
-
-# Main application function
 def main():
     # Custom CSS styling
     st.markdown("""
@@ -535,13 +484,11 @@ def main():
         </style>
         """, unsafe_allow_html=True)
 
-    # Title
     st.title("Stock Market Analysis Dashboard")
 
     fetch_and_store_us_listings()
 
     st.sidebar.header("User Input")
-
 
     st.sidebar.subheader("Stock Selection")
     search_query = st.sidebar.text_input("Search for a stock", "")
@@ -601,7 +548,6 @@ def main():
             st.warning("No data available for the selected date range.")
             return
 
-        # Display headers under stock name
         latest_data = df.iloc[-1]
 
         colhdr, coldate = st.columns([2, 1])
@@ -613,7 +559,7 @@ def main():
             else:
                 st.markdown("**Last Data Fetched on:** N/A")
 
-        # Use columns to display metrics
+        # Display metrics
         col2, col3, col4, col5, col6 = st.columns(5)
 
         with col2:
@@ -641,7 +587,6 @@ def main():
             show_cumulative_returns = True
             show_bollinger_bands = True
             show_ml_prediction = True
-            
 
         if show_closing_price:
             plot_closing_price(df, symbol)
@@ -671,7 +616,6 @@ def main():
             plot_bollinger_bands(df, symbol, window=20)
             st.markdown("**Bollinger Bands:** This chart displays the stock's price along with Bollinger Bands, which are volatility indicators based on standard deviation.")
 
-      # Machine Learning Prediction
         if show_ml_prediction:
             st.header("Machine Learning Prediction")
 
@@ -680,7 +624,6 @@ def main():
 
             if model_option == 'Linear Regression':
                 st.markdown("**Using Linear Regression Model**")
-                # Assuming train_model is already defined and returns the necessary outputs
                 model, y_pred_test, y_test, future_predictions, rmse, mae = train_model(df)
             elif model_option == 'LSTM':
                 st.markdown("**Using LSTM Model**")
@@ -704,7 +647,6 @@ def main():
                 title='Actual vs Predicted Close Prices on Test Set',
                 template='plotly_white',
                 title_x=0.5,
-                title_xanchor='center',
                 xaxis_title='Date',
                 yaxis_title='Closing Price (USD)',
                 hovermode='x unified',
@@ -713,7 +655,7 @@ def main():
 
             # Plot future predictions
             fig_future = go.Figure()
-            # Plot last 60 days of actual close prices for context
+            # Plot last 30 days of actual close prices for context
             df_ml = df[['Date', 'Close']].copy()
             df_ml['Date'] = pd.to_datetime(df_ml['Date'], unit='ms')
             df_ml.set_index('Date', inplace=True)
@@ -730,7 +672,6 @@ def main():
                 title='Future Predicted Close Prices for the Next Month',
                 template='plotly_white',
                 title_x=0.5,
-                title_xanchor='center',
                 xaxis_title='Date',
                 yaxis_title='Closing Price (USD)',
                 hovermode='x unified',
